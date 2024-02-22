@@ -1,0 +1,310 @@
+---
+title: "NYAirbnb"
+author: "MOHAMED EL RAGABY"
+date: "2024-02-22"
+output: html_document
+---
+#Installing Packages
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(knitr)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(corrplot)
+library(caret)
+library(gridExtra)
+library(scales)
+library(Rmisc)
+library(ggrepel)
+library(randomForest)
+library(psych)
+library(xgboost)
+```
+
+#VIEWING DATA
+
+```{r}
+getwd()
+dir()
+
+NYData <- read.csv("NY2024.csv", TRUE, ",")
+head(NYData)
+```
+
+#EXPLORING DATA
+
+
+```{r pressure, echo=FALSE}
+#Checking number of rows in the dataset 
+nrow(NYData)
+
+#Checking type of every column in the dataset
+str(NYData)
+
+#Looking for which columns have null values
+colSums(is.na(NYData))
+
+# Dropping columns that are not significant 
+NYData <- NYData[, !(names(NYData) %in% c('id', 'host_name'))]
+
+head(NYData, 3)
+
+#Examining Unique Values
+unique_values <- unique(NYData$neighbourhood_group)
+print(unique_values)
+
+unique_values <- unique(NYData$neighbourhood)
+print(unique_values)
+
+unique_values <- unique(NYData$room_type)
+print(unique_values)
+
+#Seeing which hosts (IDs) have the most listings on Airbnb 
+top_host <- table(NYData$host_id)
+top_host_df <- as.data.frame(top_host)
+top_host_df <- top_host_df[order(-top_host_df$Freq),]
+top_host_df <- head(top_host_df, 10)
+
+row.names(top_host_df) <- NULL
+
+colnames(top_host_df) <- c('Host_ID', 'Listings')
+
+top_host_df
+```
+
+#Visualizing Data
+
+```{r}
+#Hosts with the most listings in NYC
+
+viz_1 <- ggplot(top_host_df, aes(x = reorder(Host_ID, -Listings), y = Listings, fill = Listings)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Hosts with the most listings in NYC",
+       x = "Host IDs",
+       y = "Count of listings") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(viz_1)
+```
+
+```{r}
+#Density and Distribution of Prices for Each Neighborhood 
+
+sub_6 <- subset(NYData, price < 500)
+viz_2 <- ggplot(sub_6, aes(x = borough, y = price, fill = borough)) +
+  geom_violin() +
+  labs(title = "Density and Distribution of Prices for Each Neighborhood",
+       x = "Neighborhood",
+       y = "Price Per Night") +
+  theme(legend.position = "none", 
+        axis.title.x = element_text(face = "bold"), 
+        axis.title.y = element_text(face = "bold"))
+print(viz_2)
+```
+
+```{r}
+#Density and Distribution of Prices for Each Neighborhood 
+
+top_neighbourhoods <- head(names(sort(table(NYData$borough), decreasing = TRUE)), 10)
+sub_6 <- subset(NYData, price < 500 & borough %in% top_neighbourhoods)
+viz_boxplot <- ggplot(sub_6, aes(x = borough, y = price, fill = borough)) +
+  geom_boxplot() +
+  labs(title = "Distribution of Prices for Each Neighbourhood",
+       x = "Neighbourhood",
+       y = "Price Per Night") +
+  theme(legend.position = "none", 
+        axis.title.x = element_text(face = "bold"), 
+        axis.title.y = element_text(face = "bold"))
+
+print(viz_boxplot)
+```
+
+```{r}
+#Visualizing the distribution of room types
+options(repr.plot.width=12, repr.plot.height=6)
+
+NYData$room_type <- factor(NYData$room_type, levels = unique(NYData$room_type))
+
+custom_colors <- c("blue", "green", "orange", "red")
+
+viz_grouped_bar <- ggplot(NYData, aes(x = borough, fill = room_type)) +
+  geom_bar(position = "dodge", width = 0.7) +
+  labs(title = "Distribution of Room Types per Neighborhood Group",
+       x = "Neighborhood Group",
+       y = "Number of Listings") +
+  scale_fill_manual(values = custom_colors) +
+  theme_minimal()
+
+print(viz_grouped_bar)
+```
+
+```{r}
+#Creating a map of New York and its neighborhoods
+
+library(sf)
+library(leaflet)
+library(leaflet.extras)
+
+coor <- st_read("coor")
+str(coor)
+ny_airbnb <- read.csv("NY2024.csv")
+
+# Calculating average price by neighborhood
+feq <- aggregate(ny_airbnb$price, by = list(ny_airbnb$neighborhood), FUN = mean)
+names(feq) <- c('neighborhood', 'average_price')
+
+# Merging 'coor' and 'feq' data frames on 'neighborhood'
+coor <- merge(coor, feq, by='neighborhood', all.x=TRUE)
+
+# Rounding 'average_price' to the nearest integer
+coor$average_price <- round(coor$average_price)
+
+# Setting the range manually based on your data
+color_scale <- colorNumeric(palette= "Reds", domain = NULL)
+
+# Creating a leaflet map
+map3 <- leaflet(coor) %>%
+  setView(lng = -74.00, lat = 40.71, zoom = 10) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    fillColor = ~color_scale(average_price),
+    weight = 1,
+    color = "black",
+    fillOpacity = 0.5,
+    highlight = highlightOptions(
+      weight = 3,
+      fillColor = ~color_scale(average_price),
+      fillOpacity = 0.8
+    ),
+    #label = ~paste(neighborhood, ': '," $",average_price, "/ night")
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = color_scale,
+    values = coor$average_price,
+    title = "Average Price",
+    opacity = 0.7
+  )
+
+map3
+```
+
+```{r}
+#Creating a map with all the AirBnB listings
+
+library(sf)
+library(leaflet)
+library(leaflet.extras)
+
+# Creating a simple spatial object
+NYData_sf <- st_as_sf(NYData, coords = c("longitude", "latitude"), crs = 4326)
+
+colors_red <- colorNumeric(palette = "Reds", domain = NULL)
+
+# Creating leaflet map
+map <- leaflet(NYData_sf) %>%
+  addProviderTiles("CartoDB.Voyager") %>%
+  addMarkers(
+    clusterOptions = markerClusterOptions(),
+    group = "listings",
+    options = markerOptions(
+      fillColor = ~colors_red(price),
+      fillOpacity = 0.75,
+      weight = 2,
+      color = "black",
+      radius = 5
+    ),
+    popup = ~paste(
+      "<strong>Price:</strong>", price, "<br>",
+      "<strong>Room Type:</strong>", room_type, "<br>",
+      "<strong>Minimum Nights:</strong>", minimum_nights, "<br>",
+      "<strong>Bedrooms:</strong>", bedrooms, "<br>",
+      "<strong>Beds:</strong>", beds, "<br>",
+      "<strong>Baths:</strong>", baths
+    )
+  ) %>%
+  addMiniMap(toggleDisplay = TRUE)
+
+map
+```
+
+```{r}
+#Combining Map 1 & 2
+library(sf)
+library(leaflet)
+library(leaflet.extras)
+
+coor <- st_read("coor")
+str(coor)
+ny_airbnb <- read.csv("NY2024.csv")
+
+# Calculating average price by neighborhood
+feq <- aggregate(ny_airbnb$price, by = list(ny_airbnb$neighborhood), FUN = mean)
+names(feq) <- c('neighborhood', 'average_price')
+
+# Merging 'coor' and 'feq' data frames on 'neighborhood'
+coor <- merge(coor, feq, by='neighborhood', all.x=TRUE)
+
+# Rounding 'average_price' to the nearest integer
+coor$average_price <- round(coor$average_price)
+
+color_scale <- colorNumeric(palette= "Purples", domain = NULL)
+
+# Creating a leaflet map
+map <- leaflet(coor) %>%
+  setView(lng = -74.00, lat = 40.71, zoom = 10) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    fillColor = ~color_scale(average_price),
+    weight = 1,
+    color = "black",
+    fillOpacity = 0.5,
+    highlight = highlightOptions(
+      weight = 3,
+      fillColor = ~color_scale(average_price),
+      fillOpacity = 0.8
+    ),
+    #label = ~paste(neighborhood, ': '," $",average_price, "/ night")
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = color_scale,
+    values = coor$average_price,
+    title = "Average Price",
+    opacity = 0.7
+  )
+
+# Creating a simple spatial object
+NYData_sf <- st_as_sf(NYData, coords = c("longitude", "latitude"), crs = 4326)
+
+colors_red <- colorNumeric(palette = "Reds", domain = NULL)
+
+# Adding markers to the existing map
+map <- addMarkers(
+  map,
+  data = NYData_sf,
+  clusterOptions = markerClusterOptions(),
+  group = "listings",
+  options = markerOptions(
+    fillColor = ~colors_red(price),
+    fillOpacity = 0.75,
+    weight = 2,
+    color = "black",
+    radius = 5
+  ),
+  popup = ~paste(
+    "<strong>Price:</strong>", price, "<br>",
+    "<strong>Room Type:</strong>", room_type, "<br>",
+    "<strong>Minimum Nights:</strong>", minimum_nights, "<br>",
+    "<strong>Bedrooms:</strong>", bedrooms, "<br>",
+    "<strong>Beds:</strong>", beds, "<br>",
+    "<strong>Baths:</strong>", baths
+  )
+) %>%
+  addMiniMap(toggleDisplay = TRUE)
+map
+```
+
